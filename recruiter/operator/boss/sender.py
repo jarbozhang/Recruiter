@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import random
-import time
 from datetime import datetime, timedelta
 
 from recruiter import config
