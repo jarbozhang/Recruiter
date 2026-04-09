@@ -219,7 +219,7 @@ Lane A (U2), Lane B (U3), Lane C (U4→U5), Lane D (U6) 可并行开发，U7 等
 
 ---
 
-- [ ] **Unit 3: 浏览器端数据采集**
+- [x] **Unit 3: 浏览器端数据采集**
 
 **Goal:** 通过 agent-browser 自动浏览 Boss直聘网页端，采集候选人列表和简历数据。
 
@@ -255,7 +255,7 @@ Lane A (U2), Lane B (U3), Lane C (U4→U5), Lane D (U6) 可并行开发，U7 等
 
 ---
 
-- [ ] **Unit 4: AI 简历匹配引擎**
+- [x] **Unit 4: AI 简历匹配引擎**
 
 **Goal:** 实现 AI 简历匹配评分，输入 JD + 简历输出 0-100 分和匹配理由。
 
@@ -293,7 +293,7 @@ Lane A (U2), Lane B (U3), Lane C (U4→U5), Lane D (U6) 可并行开发，U7 等
 
 ---
 
-- [ ] **Unit 5: AI 话术生成**
+- [x] **Unit 5: AI 话术生成**
 
 **Goal:** 根据岗位和候选人背景生成个性化招呼话术。
 
@@ -327,7 +327,7 @@ Lane A (U2), Lane B (U3), Lane C (U4→U5), Lane D (U6) 可并行开发，U7 等
 
 ---
 
-- [ ] **Unit 6: 操作执行层（agent-browser 自动发送）**
+- [x] **Unit 6: 操作执行层（agent-browser 自动发送）**
 
 **Goal:** 通过 agent-browser 在 Boss直聘网页端自动发送已审核的招呼消息。
 
@@ -368,7 +368,7 @@ Lane A (U2), Lane B (U3), Lane C (U4→U5), Lane D (U6) 可并行开发，U7 等
 
 ---
 
-- [ ] **Unit 7: Streamlit 管理面板**
+- [x] **Unit 7: Streamlit 管理面板**
 
 **Goal:** 搭建 Web 管理面板，供顾问查看候选人、审核话术、配置岗位。
 
