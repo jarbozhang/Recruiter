@@ -1,7 +1,23 @@
-import asyncio
+"""Boss直聘自动发送消息模块
+
+通过 AdsPower 指纹浏览器 + Selenium 在 Boss直聘网页端自动发送已审核的招呼消息。
+"""
+
 import logging
 import random
+import time
 from datetime import datetime, timedelta
+
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    WebDriverException,
+)
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.remote.webdriver import WebDriver
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from recruiter import config
 from recruiter.db.models import Database
@@ -88,7 +104,7 @@ class RateLimiter:
 
 
 class BossSender:
-    """通过 Playwright page 在 Boss直聘发送已审核的消息。"""
+    """通过 Selenium WebDriver 在 Boss直聘发送已审核的消息。"""
 
     # 健康检查用的关键 selectors
     HEALTH_SELECTORS = [
@@ -96,33 +112,36 @@ class BossSender:
         ".chat-input",         # 输入框
     ]
 
-    def __init__(self, page, db: Database):
+    def __init__(self, driver: WebDriver, db: Database):
         """
         Args:
-            page: Playwright page 实例
+            driver: Selenium WebDriver 实例（通过 AdsPower 获取）
             db: 数据库实例
         """
-        self.page = page
+        self.driver = driver
         self.db = db
         self.circuit_breaker = CircuitBreaker()
         self.rate_limiter = RateLimiter()
 
-    async def health_check(self, url: str = "https://www.zhipin.com/web/boss/chat") -> bool:
+    def health_check(self, url: str = "https://www.zhipin.com/web/boss/chat") -> bool:
         """检查 Boss直聘聊天页面关键元素是否存在。"""
         try:
-            await self.page.goto(url, timeout=30000)
+            self.driver.get(url)
+            WebDriverWait(self.driver, 30).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+            )
             for selector in self.HEALTH_SELECTORS:
-                el = await self.page.query_selector(selector)
-                if el is None:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not elements:
                     logger.error("Health check failed: selector '%s' not found", selector)
                     return False
             logger.info("Health check passed")
             return True
-        except Exception as e:
+        except (TimeoutException, WebDriverException) as e:
             logger.error("Health check error: %s", e)
             return False
 
-    async def send_message(self, conv_id: int) -> str:
+    def send_message(self, conv_id: int) -> str:
         """发送单条消息，返回最终状态。
 
         Returns: "sent" | "failed" | "timeout"
@@ -144,33 +163,34 @@ class BossSender:
         try:
             # 导航到候选人聊天页
             chat_url = f"https://www.zhipin.com/web/boss/chat?id={candidate['platform_id']}"
-            await self.page.goto(chat_url, timeout=30000)
+            self.driver.get(chat_url)
 
             # 等待输入框
-            input_el = await self.page.wait_for_selector(".chat-input", timeout=10000)
-            if not input_el:
-                raise Exception("Chat input not found")
+            wait = WebDriverWait(self.driver, 10)
+            input_el = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".chat-input"))
+            )
 
             # 输入消息
-            await input_el.fill(conv["message"])
+            input_el.clear()
+            input_el.send_keys(conv["message"])
 
             # 发送
-            send_btn = await self.page.wait_for_selector(".btn-send", timeout=5000)
-            if send_btn:
-                await send_btn.click()
-            else:
-                await self.page.keyboard.press("Enter")
+            try:
+                send_btn = self.driver.find_element(By.CSS_SELECTOR, ".btn-send")
+                send_btn.click()
+            except NoSuchElementException:
+                input_el.send_keys(Keys.ENTER)
 
             # 确认发送成功 - 检查消息是否出现在聊天记录
             try:
-                await self.page.wait_for_selector(
-                    ".message-item:last-child",
-                    timeout=config.SEND_TIMEOUT * 1000,
+                WebDriverWait(self.driver, config.SEND_TIMEOUT).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, ".message-item:last-child"))
                 )
                 self.db.update_conversation_status(conv_id, "sent")
                 self.circuit_breaker.record_success()
                 return "sent"
-            except Exception:
+            except TimeoutException:
                 self.db.update_conversation_status(conv_id, "timeout")
                 self.circuit_breaker.record_failure()
                 return "timeout"
@@ -181,7 +201,7 @@ class BossSender:
             self.circuit_breaker.record_failure()
             return "failed"
 
-    async def process_queue(self) -> dict:
+    def process_queue(self) -> dict:
         """处理审核队列中所有 approved 的消息。
 
         Returns:
@@ -190,7 +210,7 @@ class BossSender:
         stats = {"sent": 0, "failed": 0, "timeout": 0, "skipped": 0, "reason": ""}
 
         # 健康检查
-        if not await self.health_check():
+        if not self.health_check():
             stats["reason"] = "health_check_failed"
             return stats
 
@@ -214,12 +234,12 @@ class BossSender:
                 stats["reason"] = limit_reason
                 continue
 
-            result = await self.send_message(conv["id"])
+            result = self.send_message(conv["id"])
             stats[result] = stats.get(result, 0) + 1
             self.rate_limiter.record_operation()
 
             # 随机等待
             interval = self.rate_limiter.get_random_interval()
-            await asyncio.sleep(interval)
+            time.sleep(interval)
 
         return stats

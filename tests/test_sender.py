@@ -1,7 +1,7 @@
 import os
 import tempfile
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,14 +20,23 @@ def db():
 
 
 @pytest.fixture
-def mock_page():
-    page = AsyncMock()
-    return page
+def mock_driver():
+    return MagicMock()
+
+
+@pytest.fixture(autouse=True)
+def mock_webdriver_wait():
+    """Patch WebDriverWait to avoid real timeouts in tests."""
+    with patch("recruiter.operator.boss.sender.WebDriverWait") as mock_cls:
+        mock_wait = MagicMock()
+        mock_wait.until.return_value = MagicMock()
+        mock_cls.return_value = mock_wait
+        yield mock_cls
 
 
 @pytest.fixture
-def sender(mock_page, db):
-    return BossSender(mock_page, db)
+def sender(mock_driver, db):
+    return BossSender(mock_driver, db)
 
 
 def _setup_approved_conv(db):
@@ -103,82 +112,75 @@ class TestRateLimiter:
 # -- BossSender --
 
 class TestSendMessage:
-    @pytest.mark.asyncio
-    async def test_send_success(self, sender, db, mock_page):
+    def test_send_success(self, sender, db, mock_driver, mock_webdriver_wait):
         """approved → sending → sent 全链路。"""
         _, _, conv_id = _setup_approved_conv(db)
+        mock_driver.find_element.return_value = MagicMock()  # send btn
 
-        # mock 页面操作成功
-        input_el = AsyncMock()
-        send_btn = AsyncMock()
-        mock_page.wait_for_selector.side_effect = [input_el, send_btn, MagicMock()]  # input, send btn, confirm
-        mock_page.query_selector.return_value = MagicMock()
-
-        result = await sender.send_message(conv_id)
+        result = sender.send_message(conv_id)
         assert result == "sent"
         assert db.get_conversation(conv_id)["status"] == "sent"
 
-    @pytest.mark.asyncio
-    async def test_send_page_error_marks_failed(self, sender, db, mock_page):
+    def test_send_page_error_marks_failed(self, sender, db, mock_driver):
         """页面异常 → status=failed。"""
         _, _, conv_id = _setup_approved_conv(db)
-        mock_page.goto.side_effect = Exception("page crashed")
+        mock_driver.get.side_effect = Exception("page crashed")
 
-        result = await sender.send_message(conv_id)
+        result = sender.send_message(conv_id)
         assert result == "failed"
         assert db.get_conversation(conv_id)["status"] == "failed"
 
-    @pytest.mark.asyncio
-    async def test_send_timeout(self, sender, db, mock_page):
+    def test_send_timeout(self, sender, db, mock_driver, mock_webdriver_wait):
         """发送后无法确认 → timeout。"""
         _, _, conv_id = _setup_approved_conv(db)
 
-        input_el = AsyncMock()
-        send_btn = AsyncMock()
-        mock_page.wait_for_selector.side_effect = [
-            input_el,        # chat input
-            send_btn,        # send button
-            Exception("timeout waiting for confirmation"),  # confirm element
-        ]
+        from selenium.common.exceptions import TimeoutException
+        call_count = [0]
 
-        result = await sender.send_message(conv_id)
+        def mock_until(condition):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return MagicMock()  # chat input found
+            raise TimeoutException("confirmation timeout")
+
+        mock_wait = MagicMock()
+        mock_wait.until.side_effect = mock_until
+        mock_webdriver_wait.return_value = mock_wait
+        mock_driver.find_element.return_value = MagicMock()
+
+        result = sender.send_message(conv_id)
         assert result == "timeout"
         assert db.get_conversation(conv_id)["status"] == "timeout"
 
-    @pytest.mark.asyncio
-    async def test_not_approved_returns_failed(self, sender, db):
+    def test_not_approved_returns_failed(self, sender, db):
         """非 approved 状态的消息不发送。"""
         job_id = db.create_job("test", "JD")
         cid = db.upsert_candidate("boss", "u_099", "test", "resume", "inbound")
         conv_id = db.create_conversation(cid, job_id, "msg")  # status=pending
 
-        result = await sender.send_message(conv_id)
+        result = sender.send_message(conv_id)
         assert result == "failed"
 
 
 class TestCircuitBreakerIntegration:
-    @pytest.mark.asyncio
-    async def test_three_failures_triggers_breaker(self, sender, db, mock_page):
+    def test_three_failures_triggers_breaker(self, sender, db, mock_driver):
         """连续 3 次失败触发 circuit breaker。"""
-        mock_page.goto.side_effect = Exception("page error")
+        mock_driver.get.side_effect = Exception("page error")
 
         for i in range(3):
             job_id = db.create_job(f"job{i}", "JD")
             cid = db.upsert_candidate("boss", f"u_f{i}", f"name{i}", "resume", "inbound")
             conv_id = db.create_conversation(cid, job_id, f"msg{i}")
             db.update_conversation_status(conv_id, "approved")
-            await sender.send_message(conv_id)
+            sender.send_message(conv_id)
 
         assert sender.circuit_breaker.is_open
 
 
 class TestRateLimitIntegration:
-    @pytest.mark.asyncio
-    async def test_hourly_limit_stops_sending(self, sender, db, mock_page):
+    def test_hourly_limit_stops_sending(self, sender, db, mock_driver):
         """达到每小时上限后停止发送。"""
         sender.rate_limiter = RateLimiter(hourly_limit=2, daily_limit=100, interval_min=0, interval_max=0)
-
-        # 手动记录 2 次操作
         sender.rate_limiter.record_operation()
         sender.rate_limiter.record_operation()
 
@@ -186,11 +188,9 @@ class TestRateLimitIntegration:
         assert not can
         assert reason == "hourly_limit_reached"
 
-    @pytest.mark.asyncio
-    async def test_daily_limit_stops_sending(self, sender, db, mock_page):
+    def test_daily_limit_stops_sending(self, sender, db, mock_driver):
         """达到每日上限后停止发送。"""
         sender.rate_limiter = RateLimiter(hourly_limit=100, daily_limit=2, interval_min=0, interval_max=0)
-
         sender.rate_limiter.record_operation()
         sender.rate_limiter.record_operation()
 
@@ -200,20 +200,18 @@ class TestRateLimitIntegration:
 
 
 class TestHealthCheck:
-    @pytest.mark.asyncio
-    async def test_health_check_pass(self, sender, mock_page):
-        mock_page.query_selector.return_value = MagicMock()  # 元素存在
-        result = await sender.health_check()
+    def test_health_check_pass(self, sender, mock_driver):
+        mock_driver.find_elements.return_value = [MagicMock()]
+        result = sender.health_check()
         assert result is True
 
-    @pytest.mark.asyncio
-    async def test_health_check_fail_missing_selector(self, sender, mock_page):
-        mock_page.query_selector.return_value = None  # 元素不存在
-        result = await sender.health_check()
+    def test_health_check_fail_missing_selector(self, sender, mock_driver):
+        mock_driver.find_elements.return_value = []
+        result = sender.health_check()
         assert result is False
 
-    @pytest.mark.asyncio
-    async def test_health_check_page_error(self, sender, mock_page):
-        mock_page.goto.side_effect = Exception("network error")
-        result = await sender.health_check()
+    def test_health_check_page_error(self, sender, mock_driver):
+        from selenium.common.exceptions import WebDriverException
+        mock_driver.get.side_effect = WebDriverException("network error")
+        result = sender.health_check()
         assert result is False
