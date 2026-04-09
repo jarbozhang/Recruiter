@@ -139,8 +139,8 @@ class TestSendMessage:
 
         def mock_until(condition):
             call_count[0] += 1
-            if call_count[0] == 1:
-                return MagicMock()  # chat input found
+            if call_count[0] <= 2:
+                return MagicMock()  # geek-item list + chat input
             raise TimeoutException("confirmation timeout")
 
         mock_wait = MagicMock()

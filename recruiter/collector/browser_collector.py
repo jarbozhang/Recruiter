@@ -23,18 +23,30 @@ from recruiter.db.models import Database
 
 logger = logging.getLogger(__name__)
 
-# 页面关键 CSS 选择器 —— 用于 health check（需要根据真实页面调整）
+# Boss直聘真实 CSS 选择器（2026-04 实测）
 SELECTORS = {
-    # 候选人列表页
-    "candidate_list": ".candidate-list",
-    "candidate_card": ".candidate-card",
-    "candidate_name": ".candidate-card .name",
-    "candidate_detail_link": ".candidate-card a",
-    # 简历详情页
+    # 沟通页 - 候选人聊天列表
+    "candidate_list": ".geek-item-wrap",
+    "candidate_card": ".geek-item",
+    "candidate_name": ".geek-name",
+    "candidate_detail_link": ".geek-item",  # 点击卡片打开聊天
+    # 聊天区域
+    "chat_input": ".boss-chat-editor-input",  # contenteditable div
+    "message_item": ".message-item",
+    # 简历/详情页（待实测确认）
     "resume_container": ".resume-container",
     "resume_text": ".resume-content",
+    # 牛人管理页
+    "geek_manage_card": ".geek-card",
     # 分页
-    "next_page": ".pagination .next",
+    "next_page": ".pagination .next, .page-next",
+}
+
+# Boss直聘后台 URL
+BOSS_URLS = {
+    "chat": "https://www.zhipin.com/web/chat/index",
+    "geek_manage": "https://www.zhipin.com/web/chat/geek/manage_v2",
+    "job_list": "https://www.zhipin.com/web/chat/job/list",
 }
 
 # 翻页随机等待范围（秒）

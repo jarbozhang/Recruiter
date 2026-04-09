@@ -106,10 +106,10 @@ class RateLimiter:
 class BossSender:
     """通过 Selenium WebDriver 在 Boss直聘发送已审核的消息。"""
 
-    # 健康检查用的关键 selectors
+    # 健康检查用的关键 selectors（2026-04 实测）
     HEALTH_SELECTORS = [
-        ".chat-conversation",  # 聊天页面主容器
-        ".chat-input",         # 输入框
+        ".geek-item",                  # 聊天列表项
+        ".boss-chat-editor-input",     # 聊天输入框
     ]
 
     def __init__(self, driver: WebDriver, db: Database):
@@ -161,28 +161,44 @@ class BossSender:
             return "failed"
 
         try:
-            # 导航到候选人聊天页
-            chat_url = f"https://www.zhipin.com/web/boss/chat?id={candidate['platform_id']}"
-            self.driver.get(chat_url)
+            # 在聊天列表中找到候选人并点击（通过 data-id 属性）
+            # Boss直聘聊天页 URL: /web/chat/index
+            self.driver.get("https://www.zhipin.com/web/chat/index")
 
-            # 等待输入框
+            # 等待聊天列表加载
             wait = WebDriverWait(self.driver, 10)
-            input_el = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".chat-input"))
+            wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".geek-item"))
             )
 
-            # 输入消息
-            input_el.clear()
-            input_el.send_keys(conv["message"])
-
-            # 发送
+            # 找到候选人的聊天项并点击
+            candidate_selector = f".geek-item[data-id*='{candidate['platform_id']}']"
             try:
-                send_btn = self.driver.find_element(By.CSS_SELECTOR, ".btn-send")
-                send_btn.click()
+                geek_item = self.driver.find_element(By.CSS_SELECTOR, candidate_selector)
+                self.driver.execute_script("arguments[0].click()", geek_item)
             except NoSuchElementException:
-                input_el.send_keys(Keys.ENTER)
+                # 搜索候选人名字
+                logger.warning("未在聊天列表找到候选人 %s，尝试搜索", candidate['platform_id'])
+                raise Exception(f"Candidate {candidate['platform_id']} not found in chat list")
 
-            # 确认发送成功 - 检查消息是否出现在聊天记录
+            time.sleep(2)
+
+            # 等待聊天输入框（contenteditable div）
+            input_el = wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".boss-chat-editor-input"))
+            )
+
+            # 输入消息（contenteditable div 用 JS 写入）
+            self.driver.execute_script(
+                "arguments[0].textContent = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+                input_el, conv["message"]
+            )
+            time.sleep(0.5)
+
+            # 发送（Enter 键）
+            input_el.send_keys(Keys.ENTER)
+
+            # 确认发送成功 - 检查新消息出现
             try:
                 WebDriverWait(self.driver, config.SEND_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, ".message-item:last-child"))
