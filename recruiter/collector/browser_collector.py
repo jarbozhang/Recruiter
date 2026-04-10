@@ -1,7 +1,7 @@
 """Boss直聘 Web 端候选人数据采集器
 
-通过 AdsPower 指纹浏览器 + Selenium 自动浏览 Boss直聘网页，
-采集候选人列表和简历数据并存入 DB。
+通过 BrowserDriver 接口（AdsPower/bb-browser/Playwright 等）
+自动浏览 Boss直聘网页，采集候选人列表和简历数据并存入 DB。
 """
 
 import logging
@@ -9,70 +9,46 @@ import random
 import time
 from dataclasses import dataclass, field
 
-from selenium.common.exceptions import (
-    NoSuchElementException,
-    TimeoutException,
-    WebDriverException,
-)
-from selenium.webdriver.common.by import By
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-
+from recruiter.browser.base import BrowserDriver
 from recruiter.db.models import Database
 
 logger = logging.getLogger(__name__)
 
 # Boss直聘真实 CSS 选择器（2026-04 实测）
 SELECTORS = {
-    # 沟通页 - 候选人聊天列表
     "candidate_list": ".geek-item-wrap",
     "candidate_card": ".geek-item",
     "candidate_name": ".geek-name",
-    "candidate_detail_link": ".geek-item",  # 点击卡片打开聊天
-    # 聊天区域
-    "chat_input": ".boss-chat-editor-input",  # contenteditable div
+    "candidate_detail_link": ".geek-item",
+    "chat_input": ".boss-chat-editor-input",
     "message_item": ".message-item",
-    # 简历/详情页（待实测确认）
     "resume_container": ".resume-container",
     "resume_text": ".resume-content",
-    # 牛人管理页
     "geek_manage_card": ".geek-card",
-    # 分页
     "next_page": ".pagination .next, .page-next",
 }
 
-# Boss直聘后台 URL
 BOSS_URLS = {
     "chat": "https://www.zhipin.com/web/chat/index",
     "geek_manage": "https://www.zhipin.com/web/chat/geek/manage_v2",
     "job_list": "https://www.zhipin.com/web/chat/job/list",
 }
 
-# 翻页随机等待范围（秒）
 PAGE_TURN_WAIT_MIN = 3
 PAGE_TURN_WAIT_MAX = 8
-
-# 页面加载超时（秒）
-PAGE_LOAD_TIMEOUT = 30
-
-# 重试次数
 MAX_RETRIES = 1
 
 
 class HealthCheckError(Exception):
-    """页面结构校验失败"""
     pass
 
 
 class PageLoadError(Exception):
-    """页面加载失败"""
     pass
 
 
 @dataclass
 class CandidateInfo:
-    """从页面提取的候选人信息"""
     platform_id: str
     name: str
     detail_url: str = ""
@@ -84,34 +60,27 @@ class BossWebCollector:
     """Boss直聘 Web 端数据采集器
 
     Args:
-        driver: Selenium WebDriver 实例（通过 AdsPower 获取）
+        browser: 任何实现了 BrowserDriver 接口的驱动
         db: Database 实例
     """
 
-    def __init__(self, driver: WebDriver, db: Database):
-        self.driver = driver
+    def __init__(self, browser: BrowserDriver, db: Database):
+        self.browser = browser
         self.db = db
 
     def health_check(self, url: str) -> bool:
-        """验证关键页面元素是否存在（R9）
-
-        导航到目标 URL，检查必要的 CSS 选择器是否存在。
-        如果关键选择器缺失，说明页面结构已变化，抛出 HealthCheckError。
-        """
         try:
-            self.driver.get(url)
-            WebDriverWait(self.driver, PAGE_LOAD_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-            )
-        except (TimeoutException, WebDriverException) as e:
+            self.browser.navigate(url)
+        except Exception as e:
             raise PageLoadError(f"页面加载失败: {url}, {e}") from e
 
+        if not self.browser.wait_for("body", timeout=30):
+            raise PageLoadError(f"页面加载超时: {url}")
+
         missing = []
-        check_selectors = ["candidate_list", "candidate_card", "candidate_name"]
-        for name in check_selectors:
+        for name in ["candidate_list", "candidate_card", "candidate_name"]:
             selector = SELECTORS[name]
-            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-            if not elements:
+            if not self.browser.find_elements(selector):
                 missing.append(f"{name} ({selector})")
 
         if missing:
@@ -123,85 +92,59 @@ class BossWebCollector:
         return True
 
     def _extract_candidates_from_page(self) -> list[CandidateInfo]:
-        """从当前页面提取候选人列表"""
-        cards = self.driver.find_elements(By.CSS_SELECTOR, SELECTORS["candidate_card"])
-        candidates = []
-
-        for card in cards:
+        # 用 JS 一次性提取所有候选人数据，避免逐个查询
+        data = self.browser.execute_js('''
+            var cards = document.querySelectorAll(".geek-item");
+            var result = [];
+            cards.forEach(function(card) {
+                var nameEl = card.querySelector(".geek-name");
+                var name = nameEl ? nameEl.textContent.trim() : "";
+                var dataId = card.getAttribute("data-id") || "";
+                result.push({name: name, platform_id: dataId});
+            });
+            return JSON.stringify(result);
+        ''')
+        if not data:
+            return []
+        if isinstance(data, str):
+            import json
             try:
-                try:
-                    name_el = card.find_element(By.CSS_SELECTOR, ".name")
-                    name = name_el.text.strip()
-                except NoSuchElementException:
-                    name = ""
-
-                try:
-                    link_el = card.find_element(By.CSS_SELECTOR, "a")
-                    href = link_el.get_attribute("href") or ""
-                except NoSuchElementException:
-                    href = ""
-
-                # 从链接中提取 platform_id
-                platform_id = href.strip("/").split("/")[-1] if href else ""
-
-                if platform_id:
-                    candidates.append(CandidateInfo(
-                        platform_id=platform_id,
-                        name=name,
-                        detail_url=href,
-                    ))
-            except Exception as e:
-                logger.warning("提取候选人卡片信息失败: %s", e)
-                continue
-
-        return candidates
+                data = json.loads(data)
+            except Exception:
+                return []
+        return [
+            CandidateInfo(platform_id=item["platform_id"], name=item["name"])
+            for item in data
+            if item.get("platform_id")
+        ]
 
     def _extract_resume(self, detail_url: str) -> str:
-        """从候选人详情页提取简历文本"""
         try:
-            self.driver.get(detail_url)
-            WebDriverWait(self.driver, PAGE_LOAD_TIMEOUT).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-            )
-        except (TimeoutException, WebDriverException) as e:
+            self.browser.navigate(detail_url)
+        except Exception as e:
             logger.warning("简历页加载失败: %s, %s", detail_url, e)
             return ""
 
-        try:
-            resume_el = self.driver.find_element(By.CSS_SELECTOR, SELECTORS["resume_text"])
-            return resume_el.text.strip()
-        except NoSuchElementException:
+        text = self.browser.get_text(SELECTORS["resume_text"])
+        if not text:
             logger.warning("简历内容选择器不存在: %s", detail_url)
-            return ""
+        return text
 
     def _navigate_with_retry(self, url: str) -> bool:
-        """带重试的页面导航"""
         for attempt in range(MAX_RETRIES + 1):
             try:
-                self.driver.get(url)
-                WebDriverWait(self.driver, PAGE_LOAD_TIMEOUT).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-                )
-                return True
-            except (TimeoutException, WebDriverException) as e:
+                self.browser.navigate(url)
+                if self.browser.wait_for("body", timeout=30):
+                    return True
+            except Exception as e:
                 if attempt < MAX_RETRIES:
                     logger.warning("页面加载失败，重试中 (%d/%d): %s", attempt + 1, MAX_RETRIES, e)
                     time.sleep(1)
                 else:
                     logger.error("页面加载失败，已达最大重试次数: %s, %s", url, e)
-                    return False
+        return False
 
     def collect_candidates(self, job_url: str) -> list[CandidateInfo]:
-        """采集候选人列表
-
-        流程: 导航到职位候选人列表 → 逐页提取候选人 → 获取简历 → 存入 DB
-
-        Args:
-            job_url: Boss直聘职位候选人列表页 URL
-
-        Returns:
-            采集到的候选人信息列表
-        """
         if not self._navigate_with_retry(job_url):
             raise PageLoadError(f"无法加载候选人列表页: {job_url}")
 
@@ -216,14 +159,11 @@ class BossWebCollector:
                 logger.info("第 %d 页无候选人，采集结束", page_num)
                 break
 
-            # 获取每个候选人的简历
             for c in candidates:
                 if c.detail_url:
                     c.resume_text = self._extract_resume(c.detail_url)
-                    # 回到列表页
                     self._navigate_with_retry(job_url)
 
-                # 存入 DB，source 统一为 outbound（主动搜索）
                 self.db.upsert_candidate(
                     platform="boss",
                     platform_id=c.platform_id,
@@ -234,21 +174,17 @@ class BossWebCollector:
 
             all_candidates.extend(candidates)
 
-            # 检查是否有下一页
-            next_btns = self.driver.find_elements(By.CSS_SELECTOR, SELECTORS["next_page"])
-            if not next_btns:
+            # 翻页
+            if not self.browser.is_visible(SELECTORS["next_page"]):
                 logger.info("没有下一页，采集结束")
                 break
 
-            next_btn = next_btns[0]
-            is_disabled = next_btn.get_attribute("disabled")
-            next_class = next_btn.get_attribute("class") or ""
-            if is_disabled is not None or "disabled" in next_class:
+            disabled = self.browser.get_attribute(SELECTORS["next_page"], "disabled")
+            if disabled is not None:
                 logger.info("下一页按钮已禁用，采集结束")
                 break
 
-            # 翻页 + 随机等待
-            next_btn.click()
+            self.browser.click(SELECTORS["next_page"])
             wait_sec = random.uniform(PAGE_TURN_WAIT_MIN, PAGE_TURN_WAIT_MAX)
             logger.info("翻页等待 %.1fs...", wait_sec)
             time.sleep(wait_sec)

@@ -1,6 +1,7 @@
 """Boss直聘自动发送消息模块
 
-通过 AdsPower 指纹浏览器 + Selenium 在 Boss直聘网页端自动发送已审核的招呼消息。
+通过 BrowserDriver 接口在 Boss直聘网页端自动发送已审核的招呼消息。
+支持 AdsPower、bb-browser 等任意浏览器驱动。
 """
 
 import logging
@@ -8,18 +9,8 @@ import random
 import time
 from datetime import datetime, timedelta
 
-from selenium.common.exceptions import (
-    NoSuchElementException,
-    TimeoutException,
-    WebDriverException,
-)
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.remote.webdriver import WebDriver
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
-
 from recruiter import config
+from recruiter.browser.base import BrowserDriver
 from recruiter.db.models import Database
 
 logger = logging.getLogger(__name__)
@@ -49,7 +40,6 @@ class CircuitBreaker:
         if self.paused_until is None:
             return False
         if datetime.now() >= self.paused_until:
-            # 自动恢复
             self.paused_until = None
             self.consecutive_failures = 0
             logger.info("Circuit breaker recovered")
@@ -104,54 +94,37 @@ class RateLimiter:
 
 
 class BossSender:
-    """通过 Selenium WebDriver 在 Boss直聘发送已审核的消息。"""
+    """通过 BrowserDriver 在 Boss直聘发送已审核的消息。"""
 
-    # 健康检查用的关键 selectors（2026-04 实测）
-    HEALTH_SELECTORS = [
-        ".geek-item",                  # 聊天列表项
-        ".boss-chat-editor-input",     # 聊天输入框
-    ]
+    HEALTH_SELECTORS = [".geek-item", ".boss-chat-editor-input"]
 
-    def __init__(self, driver: WebDriver, db: Database):
-        """
-        Args:
-            driver: Selenium WebDriver 实例（通过 AdsPower 获取）
-            db: 数据库实例
-        """
-        self.driver = driver
+    def __init__(self, browser: BrowserDriver, db: Database):
+        self.browser = browser
         self.db = db
         self.circuit_breaker = CircuitBreaker()
         self.rate_limiter = RateLimiter()
 
-    def health_check(self, url: str = "https://www.zhipin.com/web/boss/chat") -> bool:
-        """检查 Boss直聘聊天页面关键元素是否存在。"""
+    def health_check(self, url: str = "https://www.zhipin.com/web/chat/index") -> bool:
         try:
-            self.driver.get(url)
-            WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
-            )
+            self.browser.navigate(url)
+            if not self.browser.wait_for("body", timeout=30):
+                return False
             for selector in self.HEALTH_SELECTORS:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                if not elements:
-                    logger.error("Health check failed: selector '%s' not found", selector)
+                if not self.browser.is_visible(selector):
+                    logger.error("Health check failed: '%s' not found", selector)
                     return False
             logger.info("Health check passed")
             return True
-        except (TimeoutException, WebDriverException) as e:
+        except Exception as e:
             logger.error("Health check error: %s", e)
             return False
 
     def send_message(self, conv_id: int) -> str:
-        """发送单条消息，返回最终状态。
-
-        Returns: "sent" | "failed" | "timeout"
-        """
         conv = self.db.get_conversation(conv_id)
         if not conv or conv["status"] != "approved":
             logger.error("Conversation %s not in approved status", conv_id)
             return "failed"
 
-        # 设为 sending
         self.db.update_conversation_status(conv_id, "sending")
 
         candidate = self.db.get_candidate(conv["candidate_id"])
@@ -161,52 +134,40 @@ class BossSender:
             return "failed"
 
         try:
-            # 在聊天列表中找到候选人并点击（通过 data-id 属性）
-            # Boss直聘聊天页 URL: /web/chat/index
-            self.driver.get("https://www.zhipin.com/web/chat/index")
+            # 导航到聊天页
+            self.browser.navigate("https://www.zhipin.com/web/chat/index")
+            if not self.browser.wait_for(".geek-item", timeout=10):
+                raise Exception("Chat list not loaded")
 
-            # 等待聊天列表加载
-            wait = WebDriverWait(self.driver, 10)
-            wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".geek-item"))
-            )
-
-            # 找到候选人的聊天项并点击
+            # 点击候选人
             candidate_selector = f".geek-item[data-id*='{candidate['platform_id']}']"
-            try:
-                geek_item = self.driver.find_element(By.CSS_SELECTOR, candidate_selector)
-                self.driver.execute_script("arguments[0].click()", geek_item)
-            except NoSuchElementException:
-                # 搜索候选人名字
-                logger.warning("未在聊天列表找到候选人 %s，尝试搜索", candidate['platform_id'])
+            if not self.browser.click(candidate_selector):
                 raise Exception(f"Candidate {candidate['platform_id']} not found in chat list")
 
             time.sleep(2)
 
-            # 等待聊天输入框（contenteditable div）
-            input_el = wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".boss-chat-editor-input"))
-            )
+            # 填入消息
+            if not self.browser.wait_for(".boss-chat-editor-input", timeout=10):
+                raise Exception("Chat input not found")
 
-            # 输入消息（contenteditable div 用 JS 写入）
-            self.driver.execute_script(
-                "arguments[0].textContent = arguments[1]; arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
-                input_el, conv["message"]
-            )
+            self.browser.fill(".boss-chat-editor-input", conv["message"])
             time.sleep(0.5)
 
-            # 发送（Enter 键）
-            input_el.send_keys(Keys.ENTER)
+            # 发送（模拟 Enter）
+            self.browser.execute_js('''
+                var el = document.querySelector(".boss-chat-editor-input");
+                if (el) {
+                    var e = new KeyboardEvent("keydown", {key: "Enter", keyCode: 13, bubbles: true});
+                    el.dispatchEvent(e);
+                }
+            ''')
 
-            # 确认发送成功 - 检查新消息出现
-            try:
-                WebDriverWait(self.driver, config.SEND_TIMEOUT).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".message-item:last-child"))
-                )
+            # 确认发送
+            if self.browser.wait_for(".message-item:last-child", timeout=config.SEND_TIMEOUT):
                 self.db.update_conversation_status(conv_id, "sent")
                 self.circuit_breaker.record_success()
                 return "sent"
-            except TimeoutException:
+            else:
                 self.db.update_conversation_status(conv_id, "timeout")
                 self.circuit_breaker.record_failure()
                 return "timeout"
@@ -218,32 +179,23 @@ class BossSender:
             return "failed"
 
     def process_queue(self) -> dict:
-        """处理审核队列中所有 approved 的消息。
-
-        Returns:
-            {"sent": int, "failed": int, "timeout": int, "skipped": int, "reason": str}
-        """
         stats = {"sent": 0, "failed": 0, "timeout": 0, "skipped": 0, "reason": ""}
 
-        # 健康检查
         if not self.health_check():
             stats["reason"] = "health_check_failed"
             return stats
 
-        # 获取 approved 消息
         conversations = self.db.list_conversations(status="approved")
         if not conversations:
             stats["reason"] = "no_approved_messages"
             return stats
 
         for conv in conversations:
-            # Circuit breaker 检查
             if self.circuit_breaker.is_open:
                 stats["skipped"] += 1
                 stats["reason"] = "circuit_breaker_open"
                 continue
 
-            # 频率检查
             can_go, limit_reason = self.rate_limiter.can_proceed()
             if not can_go:
                 stats["skipped"] += 1
@@ -254,7 +206,6 @@ class BossSender:
             stats[result] = stats.get(result, 0) + 1
             self.rate_limiter.record_operation()
 
-            # 随机等待
             interval = self.rate_limiter.get_random_interval()
             time.sleep(interval)
 

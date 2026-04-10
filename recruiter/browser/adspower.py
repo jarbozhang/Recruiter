@@ -1,147 +1,170 @@
-"""AdsPower Local API 客户端
+"""AdsPower 浏览器驱动
 
-通过 AdsPower 指纹浏览器的 Local API 启动/停止浏览器配置，
-获取 Selenium WebDriver 连接信息。
-
-API 文档: https://localapi-doc-en.adspower.com/docs/Rdw7Iu
+通过 AdsPower 指纹浏览器 Local API 启动浏览器，用 Selenium 操作。
+实现 BrowserDriver 接口。
 """
 
 import logging
-import time
 
 import requests
 from selenium import webdriver
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
+from recruiter.browser.base import BrowserDriver, Element
 
 logger = logging.getLogger(__name__)
 
-# AdsPower Local API 默认地址
-DEFAULT_API_BASE = "http://local.adspower.com:50325"
+DEFAULT_API_BASE = "http://127.0.0.1:50325"
 
 
-class AdsPowerClient:
-    """AdsPower Local API 客户端，管理浏览器生命周期和 Selenium 连接。"""
+class AdsPowerDriver(BrowserDriver):
+    """AdsPower + Selenium 实现。"""
 
-    def __init__(self, api_base: str = DEFAULT_API_BASE):
+    def __init__(self, api_key: str, profile_id: str,
+                 api_base: str = DEFAULT_API_BASE):
+        self.api_key = api_key
+        self.profile_id = profile_id
         self.api_base = api_base.rstrip("/")
-        self._active_profiles: dict[str, webdriver.Chrome] = {}
+        self._driver: webdriver.Chrome | None = None
+        self._headers = {"Authorization": f"Bearer {api_key}"}
 
     def _api_get(self, path: str, params: dict = None) -> dict:
-        """调用 AdsPower Local API (GET)。"""
         url = f"{self.api_base}{path}"
-        resp = requests.get(url, params=params, timeout=30)
+        resp = requests.get(url, params=params, headers=self._headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         if data.get("code") != 0:
-            raise RuntimeError(f"AdsPower API error: {data.get('msg', 'unknown')} (code={data.get('code')})")
+            raise RuntimeError(f"AdsPower API error: {data.get('msg')} (code={data.get('code')})")
         return data.get("data", {})
 
-    def check_status(self) -> bool:
-        """检查 AdsPower 是否在运行。"""
-        try:
-            resp = requests.get(f"{self.api_base}/status", timeout=5)
-            return resp.status_code == 200
-        except requests.ConnectionError:
-            return False
-
-    def start_browser(self, profile_id: str, open_tabs: int = 1,
-                      ip_tab: bool = False) -> dict:
-        """启动浏览器配置，返回连接信息。
-
-        Args:
-            profile_id: AdsPower 浏览器配置 ID
-            open_tabs: 启动时打开的标签页数
-            ip_tab: 是否打开 IP 检测页
-
-        Returns:
-            {
-                "selenium_address": "127.0.0.1:xxxx",
-                "webdriver_path": "/path/to/chromedriver",
-                "debug_port": "xxxx"
-            }
-        """
-        params = {
-            "user_id": profile_id,
-            "open_tabs": open_tabs,
-            "ip_tab": 1 if ip_tab else 0,
-        }
-        data = self._api_get("/api/v1/browser/start", params)
-        ws = data.get("ws", {})
-        result = {
-            "selenium_address": ws.get("selenium", ""),
-            "webdriver_path": data.get("webdriver", ""),
-            "debug_port": data.get("debug_port", ""),
-        }
-        logger.info("Browser started for profile %s: selenium=%s",
-                     profile_id, result["selenium_address"])
-        return result
-
-    def stop_browser(self, profile_id: str) -> bool:
-        """停止浏览器配置。"""
-        try:
-            self._api_get("/api/v1/browser/stop", {"user_id": profile_id})
-            self._active_profiles.pop(profile_id, None)
-            logger.info("Browser stopped for profile %s", profile_id)
-            return True
-        except Exception as e:
-            logger.error("Failed to stop browser %s: %s", profile_id, e)
-            return False
-
-    def check_browser_active(self, profile_id: str) -> bool:
-        """检查浏览器是否在运行。"""
-        try:
-            data = self._api_get("/api/v1/browser/active", {"user_id": profile_id})
-            return data.get("status") == "Active"
-        except Exception:
-            return False
-
-    def connect_selenium(self, profile_id: str) -> webdriver.Chrome:
-        """启动浏览器并返回已连接的 Selenium WebDriver。
-
-        如果该配置已有活跃的 driver，直接返回。
-        """
-        if profile_id in self._active_profiles:
-            driver = self._active_profiles[profile_id]
+    def _ensure_connected(self) -> webdriver.Chrome:
+        if self._driver:
             try:
-                _ = driver.title  # 测试连接是否还活着
-                return driver
+                _ = self._driver.title
+                return self._driver
             except Exception:
-                self._active_profiles.pop(profile_id, None)
+                self._driver = None
 
         # 启动浏览器
-        info = self.start_browser(profile_id)
+        data = self._api_get("/api/v1/browser/start", {
+            "user_id": self.profile_id,
+            "open_tabs": 1,
+            "ip_tab": 0,
+        })
+        ws = data.get("ws", {})
+        selenium_addr = ws.get("selenium", "")
+        webdriver_path = data.get("webdriver", "")
 
-        # 连接 Selenium
         chrome_options = Options()
-        chrome_options.add_experimental_option("debuggerAddress", info["selenium_address"])
+        chrome_options.add_experimental_option("debuggerAddress", selenium_addr)
+        service = Service(executable_path=webdriver_path)
+        self._driver = webdriver.Chrome(service=service, options=chrome_options)
 
-        service = Service(executable_path=info["webdriver_path"])
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        logger.info("AdsPower connected: profile=%s, selenium=%s", self.profile_id, selenium_addr)
+        return self._driver
 
-        self._active_profiles[profile_id] = driver
-        logger.info("Selenium connected to profile %s", profile_id)
-        return driver
+    def navigate(self, url: str) -> None:
+        driver = self._ensure_connected()
+        driver.get(url)
 
-    def disconnect(self, profile_id: str):
-        """断开 Selenium 并停止浏览器。"""
-        driver = self._active_profiles.pop(profile_id, None)
-        if driver:
+    def find_element(self, selector: str) -> Element | None:
+        driver = self._ensure_connected()
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, selector)
+            return Element(
+                text=el.text.strip(),
+                tag=el.tag_name,
+                attributes={"href": el.get_attribute("href") or ""},
+            )
+        except NoSuchElementException:
+            return None
+
+    def find_elements(self, selector: str) -> list[Element]:
+        driver = self._ensure_connected()
+        elements = driver.find_elements(By.CSS_SELECTOR, selector)
+        results = []
+        for el in elements:
             try:
-                driver.quit()
+                results.append(Element(
+                    text=el.text.strip(),
+                    tag=el.tag_name,
+                    attributes={"href": el.get_attribute("href") or ""},
+                ))
+            except Exception:
+                continue
+        return results
+
+    def click(self, selector: str) -> bool:
+        driver = self._ensure_connected()
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, selector)
+            driver.execute_script("arguments[0].click()", el)
+            return True
+        except (NoSuchElementException, WebDriverException):
+            return False
+
+    def fill(self, selector: str, text: str) -> bool:
+        driver = self._ensure_connected()
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, selector)
+            # 支持 contenteditable div 和普通 input
+            if el.get_attribute("contenteditable") == "true":
+                driver.execute_script(
+                    "arguments[0].textContent = arguments[1]; "
+                    "arguments[0].dispatchEvent(new Event('input', {bubbles: true}));",
+                    el, text,
+                )
+            else:
+                el.clear()
+                el.send_keys(text)
+            return True
+        except (NoSuchElementException, WebDriverException):
+            return False
+
+    def get_text(self, selector: str) -> str:
+        el = self.find_element(selector)
+        return el.text if el else ""
+
+    def execute_js(self, script: str) -> any:
+        driver = self._ensure_connected()
+        return driver.execute_script(script)
+
+    def screenshot(self, path: str) -> str:
+        driver = self._ensure_connected()
+        driver.save_screenshot(path)
+        return path
+
+    def current_url(self) -> str:
+        driver = self._ensure_connected()
+        return driver.current_url
+
+    def wait_for(self, selector: str, timeout: int = 10) -> bool:
+        driver = self._ensure_connected()
+        try:
+            WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+            )
+            return True
+        except TimeoutException:
+            return False
+
+    def close(self) -> None:
+        if self._driver:
+            try:
+                self._driver.quit()
             except Exception:
                 pass
-        self.stop_browser(profile_id)
-
-    def disconnect_all(self):
-        """断开所有活跃连接。"""
-        for pid in list(self._active_profiles.keys()):
-            self.disconnect(pid)
-
-    def list_profiles(self, page: int = 1, page_size: int = 100) -> list[dict]:
-        """列出所有浏览器配置。"""
-        data = self._api_get("/api/v1/user/list", {
-            "page": page,
-            "page_size": page_size,
-        })
-        return data.get("list", [])
+            self._driver = None
+        try:
+            self._api_get("/api/v1/browser/stop", {"user_id": self.profile_id})
+        except Exception:
+            pass
