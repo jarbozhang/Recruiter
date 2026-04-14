@@ -3,9 +3,11 @@
 通过 BrowserDriver 接口（AdsPower/bb-browser/Playwright 等）
 自动浏览 Boss直聘网页，采集候选人列表和简历数据并存入 DB。
 
-数据获取策略：API 拦截优先，DOM 解析兜底。
-- Playwright driver: 拦截 /wapi/zprelation/friend/getBossFriendListV2 接口
-- 其他 driver: 退化为 DOM 解析（JS querySelectorAll）
+三层数据获取策略：
+1. API 拦截（Playwright）：拦截 getBossFriendListV2 接口
+2. DOM 解析（通用）：JS querySelectorAll 从页面提取
+3. 截图视觉分析（兜底）：Claude Vision 从截图识别候选人
+   - 视觉成功后会生成选择器修复报告，反哺修复 1/2 层
 """
 
 import json
@@ -257,27 +259,124 @@ class BossWebCollector:
                     logger.error("页面加载失败，已达最大重试次数: %s, %s", url, e)
         return False
 
+    # ------ 截图视觉分析模式（最终兜底） ------
+
+    def _collect_via_vision(self, failed_stage: str) -> list[CandidateInfo] | None:
+        """通过截图 + Claude Vision 提取候选人。
+
+        成功后会生成选择器修复报告，反哺上层失败的方案。
+
+        Args:
+            failed_stage: 上层失败的阶段名，用于报告
+        """
+        from recruiter.engine.vision import VisionAnalyzer, save_selector_report
+
+        logger.info("尝试截图视觉分析模式...")
+
+        # 确保在聊天页
+        try:
+            current = self.browser.current_url()
+            if "web/chat" not in current:
+                self.browser.navigate(BOSS_URLS["chat"])
+                time.sleep(3)
+        except Exception:
+            pass
+
+        # 截图
+        screenshot_path = str(
+            __import__("recruiter.config", fromlist=["BASE_DIR"]).BASE_DIR
+            / "data" / "vision_fallback.png"
+        )
+        try:
+            self.browser.screenshot(screenshot_path)
+        except Exception as e:
+            logger.error("截图失败: %s", e)
+            return None
+
+        # Claude Vision 分析
+        try:
+            analyzer = VisionAnalyzer()
+        except Exception as e:
+            logger.error("VisionAnalyzer 初始化失败（可能缺少 API Key）: %s", e)
+            return None
+
+        result = analyzer.analyze_screenshot(screenshot_path)
+        if not result or not result.get("candidates"):
+            logger.warning("视觉分析未提取到候选人")
+            return None
+
+        # 提取候选人（视觉模式没有 platform_id，用名字做临时标识）
+        candidates = []
+        for i, c in enumerate(result["candidates"]):
+            name = c.get("name", "").strip()
+            if not name:
+                continue
+            candidates.append(CandidateInfo(
+                platform_id=f"vision_{i}_{name}",
+                name=name,
+                extra={
+                    "source": "vision",
+                    "title": c.get("title", ""),
+                    "last_message": c.get("last_message", ""),
+                },
+            ))
+
+        logger.info("视觉分析提取 %d 个候选人", len(candidates))
+
+        # 反哺：保存选择器修复报告
+        selectors_hint = result.get("selectors_hint", {})
+        if selectors_hint:
+            save_selector_report(selectors_hint, failed_stage)
+            observations = selectors_hint.get("observations", "")
+            if observations:
+                logger.warning("视觉分析发现页面变化: %s", observations)
+
+        return candidates
+
     # ------ 主入口 ------
 
     def collect_candidates(self, job_url: str = None) -> list[CandidateInfo]:
         """采集候选人列表。
 
-        策略：API 拦截优先 → DOM 解析兜底。
+        三层降级策略：API 拦截 → DOM 解析 → 截图视觉分析。
+        视觉分析成功后会生成选择器修复报告（data/selector_report.json）。
 
         Args:
             job_url: 职位页 URL。API 模式下可省略（直接访问聊天页）。
         """
         # 1. 尝试 API 拦截
         candidates = self._collect_via_api()
-
-        if candidates is not None:
-            logger.info("使用 API 拦截模式，获取 %d 个候选人", len(candidates))
+        if candidates is not None and len(candidates) > 0:
+            logger.info("[层级1] API 拦截成功，获取 %d 个候选人", len(candidates))
             self._save_candidates(candidates)
             return candidates
 
         # 2. 退化到 DOM 解析
-        logger.info("API 拦截不可用，退化到 DOM 解析模式")
-        return self._collect_via_dom(job_url or BOSS_URLS["chat"])
+        logger.info("[层级1→2] API 拦截不可用，尝试 DOM 解析")
+        failed_stage = "api_intercept"
+        try:
+            url = job_url or BOSS_URLS["chat"]
+            dom_candidates = self._collect_via_dom(url)
+            if dom_candidates:
+                logger.info("[层级2] DOM 解析成功，获取 %d 个候选人", len(dom_candidates))
+                return dom_candidates
+            failed_stage = "dom_parse_empty"
+        except PageLoadError:
+            failed_stage = "dom_parse_page_load"
+        except Exception as e:
+            logger.warning("DOM 解析异常: %s", e)
+            failed_stage = "dom_parse_error"
+
+        # 3. 最终兜底：截图视觉分析
+        logger.info("[层级2→3] DOM 解析失败 (%s)，尝试截图视觉分析", failed_stage)
+        vision_candidates = self._collect_via_vision(failed_stage)
+        if vision_candidates:
+            logger.info("[层级3] 视觉分析成功，获取 %d 个候选人", len(vision_candidates))
+            self._save_candidates(vision_candidates)
+            return vision_candidates
+
+        logger.error("三层采集策略全部失败")
+        return []
 
     def _collect_via_dom(self, job_url: str) -> list[CandidateInfo]:
         """DOM 解析模式采集（原逻辑）。"""

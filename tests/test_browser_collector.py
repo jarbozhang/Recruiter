@@ -116,10 +116,11 @@ class TestCollectCandidates:
         candidates = collector.collect_candidates("https://zhipin.com/job/123")
         assert candidates == []
 
-    def test_collect_page_load_failure_raises(self, collector, mock_browser):
+    def test_collect_page_load_failure_returns_empty(self, collector, mock_browser):
         mock_browser.navigate.side_effect = Exception("network error")
-        with pytest.raises(PageLoadError):
-            collector.collect_candidates("https://zhipin.com/job/123")
+        # 三层降级全部失败后返回空列表，不再抛异常
+        result = collector.collect_candidates("https://zhipin.com/job/123")
+        assert result == []
 
     def test_collect_dedup(self, collector, mock_browser, db):
         mock_browser.execute_js.side_effect = [
