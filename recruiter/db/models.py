@@ -82,6 +82,14 @@ class Database:
         ).fetchone()
         return row["id"] if row else None
 
+    def update_candidate_resume(self, candidate_id: int, resume_text: str):
+        """更新候选人简历内容。"""
+        self.conn.execute(
+            "UPDATE candidates SET resume_text = ?, updated_at = ? WHERE id = ?",
+            (resume_text, datetime.now().isoformat(), candidate_id),
+        )
+        self.conn.commit()
+
     def get_candidate(self, candidate_id: int) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM candidates WHERE id = ?", (candidate_id,)

@@ -332,3 +332,69 @@ class BossWebCollector:
                 resume_text=c.resume_text,
                 source="outbound",
             )
+
+    # ------ 简历详情采集 ------
+
+    def collect_resumes(self, limit: int = 50) -> dict:
+        """为没有简历的候选人逐个采集简历详情。
+
+        通过点击聊天列表中的候选人，在聊天页提取简历摘要信息。
+
+        Returns:
+            {"total": int, "collected": int, "failed": int}
+        """
+        candidates = self.db.list_candidates(platform="boss", limit=99999)
+        no_resume = [c for c in candidates if not c.get("resume_text")][:limit]
+
+        if not no_resume:
+            logger.info("所有候选人都已有简历，跳过")
+            return {"total": 0, "collected": 0, "failed": 0}
+
+        logger.info("待采集简历: %d 人", len(no_resume))
+
+        # 先导航到聊天页
+        self.browser.navigate(BOSS_URLS["chat"])
+        if not self.browser.wait_for(".geek-item", timeout=10):
+            logger.error("聊天列表未加载")
+            return {"total": len(no_resume), "collected": 0, "failed": len(no_resume)}
+
+        collected = 0
+        failed = 0
+
+        for c in no_resume:
+            pid = c["platform_id"]
+            # 点击候选人打开聊天，提取右侧简历摘要
+            selector = f".geek-item[data-id*='{pid}']"
+            if not self.browser.click(selector):
+                logger.warning("候选人 %s (pid=%s) 未在列表中找到", c["name"], pid)
+                failed += 1
+                continue
+
+            time.sleep(2)
+
+            # 提取简历摘要（右侧面板的候选人信息）
+            resume_text = self.browser.execute_js('''
+                var info = [];
+                var nameEl = document.querySelector('.geek-info .geek-name, .chat-user-info .name');
+                if (nameEl) info.push(nameEl.textContent.trim());
+                var items = document.querySelectorAll('.geek-info .info-text, .chat-user-info .info-item, .geek-detail-item');
+                items.forEach(function(el) {
+                    var t = el.textContent.trim();
+                    if (t) info.push(t);
+                });
+                return info.join(' | ');
+            ''')
+
+            if resume_text:
+                self.db.update_candidate_resume(c["id"], resume_text)
+                collected += 1
+                logger.info("采集简历: %s -> %s", c["name"], resume_text[:50])
+            else:
+                failed += 1
+
+            # 随机等待
+            time.sleep(random.uniform(1, 3))
+
+        stats = {"total": len(no_resume), "collected": collected, "failed": failed}
+        logger.info("简历采集完成: %d/%d 成功", collected, len(no_resume))
+        return stats

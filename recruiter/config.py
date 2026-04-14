@@ -7,6 +7,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # 数据库
 DB_PATH = os.getenv("RECRUITER_DB_PATH", str(BASE_DIR / "data" / "recruiter.db"))
 
+# 浏览器驱动配置
+BROWSER_DRIVER = os.getenv("BROWSER_DRIVER", "playwright")  # playwright / selenium / bb-browser
+ADSPOWER_API_KEY = os.getenv("ADSPOWER_API_KEY", "")
+ADSPOWER_PROFILE_ID = os.getenv("ADSPOWER_PROFILE_ID", "")
+ADSPOWER_API_BASE = os.getenv("ADSPOWER_API_BASE", "http://127.0.0.1:50325")
+
 # LLM API 配置
 LLM_MATCH_API_KEY = os.getenv("LLM_MATCH_API_KEY", "")
 LLM_MATCH_BASE_URL = os.getenv("LLM_MATCH_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")  # Qwen
