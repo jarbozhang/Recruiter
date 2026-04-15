@@ -1,6 +1,6 @@
 """截图视觉分析模块
 
-使用 Claude Vision API 从截图中提取候选人数据，
+使用 GLM 视觉模型（OpenAI 兼容格式）从截图中提取候选人数据，
 并分析页面 DOM 结构以反哺修复失败的 API 拦截和 DOM 解析。
 """
 
@@ -8,7 +8,7 @@ import base64
 import json
 import logging
 
-import anthropic
+from openai import OpenAI
 
 from recruiter import config
 
@@ -57,11 +57,17 @@ RESUME_EXTRACT_PROMPT = """分析这张 Boss直聘在线简历截图，提取候
 
 
 class VisionAnalyzer:
-    """使用 Claude Vision 分析截图提取数据。"""
+    """使用 GLM 视觉模型分析截图提取数据。
+
+    通过 OpenAI 兼容接口调用智谱 GLM-4.6V。
+    """
 
     def __init__(self):
-        self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
-        self.model = config.LLM_CHAT_MODEL
+        self.client = OpenAI(
+            api_key=config.LLM_VISION_API_KEY,
+            base_url=config.LLM_VISION_BASE_URL,
+        )
+        self.model = config.LLM_VISION_MODEL
 
     def _read_image(self, image_path: str) -> str | None:
         try:
@@ -73,27 +79,25 @@ class VisionAnalyzer:
 
     def _call_vision(self, image_data: str, prompt: str) -> str | None:
         try:
-            resp = self.client.messages.create(
+            resp = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=4096,
                 messages=[{
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": image_data,
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_data}",
                             },
                         },
                         {"type": "text", "text": prompt},
                     ],
                 }],
             )
-            return resp.content[0].text.strip()
+            return resp.choices[0].message.content.strip()
         except Exception as e:
-            logger.error("Claude Vision API 调用失败: %s", e)
+            logger.error("GLM Vision API 调用失败: %s", e)
             return None
 
     def extract_resume_from_screenshot(self, image_path: str) -> str | None:

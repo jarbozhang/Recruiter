@@ -52,5 +52,10 @@ MESSAGE_MAX_LENGTH = 300
 # 发送超时（秒）
 SEND_TIMEOUT = int(os.getenv("SEND_TIMEOUT", "60"))
 
+# 视觉模型（用于简历截图识别）
+LLM_VISION_API_KEY = os.getenv("LLM_VISION_API_KEY", "")
+LLM_VISION_BASE_URL = os.getenv("LLM_VISION_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/")
+LLM_VISION_MODEL = os.getenv("LLM_VISION_MODEL", "glm-4.6v-flash")
+
 # 告警 Webhook（钉钉/飞书/企业微信）
 ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")
