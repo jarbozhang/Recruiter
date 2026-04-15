@@ -53,7 +53,13 @@ else:
                 st.write("暂无匹配评分")
 
             if c.get("resume_text"):
-                st.text_area("简历", c["resume_text"], height=150, disabled=True,
-                             key=f"resume_{c['id']}")
+                resume = c["resume_text"]
+                # 完整简历（多行格式）用 markdown 展示，摘要（单行）用文本框
+                if "\n" in resume:
+                    st.markdown("**简历详情:**")
+                    st.markdown(resume)
+                else:
+                    st.text_area("简历摘要", resume, height=100, disabled=True,
+                                 key=f"resume_{c['id']}")
 
 db.close()
