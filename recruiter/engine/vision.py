@@ -43,6 +43,19 @@ EXTRACT_PROMPT = """分析这张 Boss直聘网页截图，完成两个任务：
 }"""
 
 
+RESUME_EXTRACT_PROMPT = """分析这张 Boss直聘在线简历截图，提取候选人的完整简历信息。
+
+请提取以下内容（如果截图中可见）：
+- 姓名、年龄、学历
+- 求职意向（期望职位、期望城市、期望薪资）
+- 个人优势/自我评价
+- 工作经历（公司名称、职位、时间段、工作内容/业绩）
+- 教育经历（学校、专业、学历、时间）
+- 技能标签
+
+请直接输出结构化的简历文本，不要输出 JSON 或其他格式标记。用换行分隔不同段落。"""
+
+
 class VisionAnalyzer:
     """使用 Claude Vision 分析截图提取数据。"""
 
@@ -50,19 +63,15 @@ class VisionAnalyzer:
         self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
         self.model = config.LLM_CHAT_MODEL
 
-    def analyze_screenshot(self, image_path: str) -> dict | None:
-        """分析截图，提取候选人列表和 DOM 结构线索。
-
-        Returns:
-            {"candidates": [...], "selectors_hint": {...}} 或 None
-        """
+    def _read_image(self, image_path: str) -> str | None:
         try:
             with open(image_path, "rb") as f:
-                image_data = base64.standard_b64encode(f.read()).decode("utf-8")
+                return base64.standard_b64encode(f.read()).decode("utf-8")
         except Exception as e:
             logger.error("读取截图失败: %s", e)
             return None
 
+    def _call_vision(self, image_data: str, prompt: str) -> str | None:
         try:
             resp = self.client.messages.create(
                 model=self.model,
@@ -78,12 +87,37 @@ class VisionAnalyzer:
                                 "data": image_data,
                             },
                         },
-                        {"type": "text", "text": EXTRACT_PROMPT},
+                        {"type": "text", "text": prompt},
                     ],
                 }],
             )
-            content = resp.content[0].text.strip()
-            # 提取 JSON
+            return resp.content[0].text.strip()
+        except Exception as e:
+            logger.error("Claude Vision API 调用失败: %s", e)
+            return None
+
+    def extract_resume_from_screenshot(self, image_path: str) -> str | None:
+        """从简历截图中提取完整简历文本。"""
+        image_data = self._read_image(image_path)
+        if not image_data:
+            return None
+
+        result = self._call_vision(image_data, RESUME_EXTRACT_PROMPT)
+        if result:
+            logger.info("简历截图识别完成 (%d chars)", len(result))
+        return result
+
+    def analyze_screenshot(self, image_path: str) -> dict | None:
+        """分析截图，提取候选人列表和 DOM 结构线索。"""
+        image_data = self._read_image(image_path)
+        if not image_data:
+            return None
+
+        content = self._call_vision(image_data, EXTRACT_PROMPT)
+        if not content:
+            return None
+
+        try:
             if content.startswith("```"):
                 lines = content.split("\n")
                 lines = [l for l in lines if not l.strip().startswith("```")]
@@ -93,9 +127,6 @@ class VisionAnalyzer:
             return result
         except json.JSONDecodeError as e:
             logger.error("视觉分析返回非 JSON: %s", e)
-            return None
-        except Exception as e:
-            logger.error("Claude Vision API 调用失败: %s", e)
             return None
 
 

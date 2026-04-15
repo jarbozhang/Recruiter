@@ -448,9 +448,10 @@ class BossWebCollector:
     # ------ 完整简历提取（iframe） ------
 
     def _extract_full_resume(self) -> str:
-        """点击在线简历按钮，从 iframe 中提取完整简历。
+        """点击在线简历按钮，截图后用 Claude Vision 识别完整简历。
 
-        需要 Playwright driver（支持 frame_locator / page.frames）。
+        Boss直聘的在线简历用 Canvas/WebAssembly 渲染，DOM 中没有文本，
+        只能通过截图 + 视觉识别提取。
         """
         if not hasattr(self.browser, '_ensure_connected'):
             return ""
@@ -464,36 +465,34 @@ class BossWebCollector:
                 return ""
             btn.click()
             human_delay("click")
-            time.sleep(3)
 
-            # 获取 iframe src
-            iframe_src = page.evaluate('''
-                var iframe = document.querySelector("iframe[src*='c-resume']");
-                return iframe ? iframe.src : '';
-            ''')
-            if not iframe_src:
-                logger.debug("未找到简历 iframe")
+            # 等待简历弹窗出现
+            try:
+                page.wait_for_selector('.resume-detail, .boss-dialog', timeout=8000)
+                time.sleep(3)  # 等 canvas 渲染
+            except Exception:
                 self._close_resume_dialog(page)
                 return ""
 
-            # 在新标签页打开简历 URL（避免 iframe cross-origin 限制）
-            resume_page = page.context.new_page()
-            try:
-                resume_page.goto(iframe_src, wait_until="networkidle", timeout=15000)
-                time.sleep(3)
+            # 截图简历弹窗区域
+            screenshot_path = str(
+                __import__("recruiter.config", fromlist=["BASE_DIR"]).BASE_DIR
+                / "data" / "resume_screenshot.png"
+            )
+            page.screenshot(path=screenshot_path)
 
-                text = resume_page.evaluate("document.body.innerText")
-                if text:
-                    # 清理多余空白
-                    lines = [l.strip() for l in text.split("\n") if l.strip()]
-                    result = "\n".join(lines)
-                    logger.info("完整简历提取成功 (%d chars)", len(result))
+            self._close_resume_dialog(page)
+
+            # Claude Vision 识别简历内容
+            try:
+                from recruiter.engine.vision import VisionAnalyzer
+                analyzer = VisionAnalyzer()
+                result = analyzer.extract_resume_from_screenshot(screenshot_path)
+                if result:
+                    logger.info("Vision 识别完整简历成功 (%d chars)", len(result))
                     return result
             except Exception as e:
-                logger.warning("完整简历提取失败: %s", e)
-            finally:
-                resume_page.close()
-                self._close_resume_dialog(page)
+                logger.warning("Vision 简历识别失败: %s", e)
 
         except Exception as e:
             logger.debug("_extract_full_resume 异常: %s", e)
@@ -503,17 +502,10 @@ class BossWebCollector:
     def _close_resume_dialog(self, page):
         """关闭简历弹窗。"""
         try:
-            close_btn = page.locator('.boss-dialog .close, .boss-popup__close, .dialog-close')
-            if close_btn.first.is_visible(timeout=1000):
-                close_btn.first.click()
-                time.sleep(0.5)
+            page.keyboard.press("Escape")
+            time.sleep(0.5)
         except Exception:
-            # 按 ESC 关闭
-            try:
-                page.keyboard.press("Escape")
-                time.sleep(0.5)
-            except Exception:
-                pass
+            pass
 
     # ------ 简历详情采集 ------
 
