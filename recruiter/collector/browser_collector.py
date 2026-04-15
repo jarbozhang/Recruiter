@@ -356,6 +356,15 @@ class BossWebCollector:
         logger.info("[层级1→2] API 拦截不可用，尝试 DOM 解析")
         failed_stage = "api_intercept"
         try:
+            # API 拦截阶段可能已 navigate+reload，先尝试当前页直接提取
+            if self.browser.wait_for(SELECTORS["candidate_card"], timeout=5):
+                direct = self._extract_candidates_from_page()
+                if direct:
+                    logger.info("[层级2] DOM 直接提取成功，获取 %d 个候选人", len(direct))
+                    self._save_candidates(direct)
+                    return direct
+
+            # 当前页提取失败，尝试完整的 DOM 采集流程（含 navigate）
             url = job_url or BOSS_URLS["chat"]
             dom_candidates = self._collect_via_dom(url)
             if dom_candidates:
