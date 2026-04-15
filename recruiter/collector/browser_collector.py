@@ -484,26 +484,26 @@ class BossWebCollector:
 
             human_delay("click")
 
-            # 提取简历摘要（右侧聊天面板顶部的 .conversation-box）
+            # 提取简历摘要（.base-info-content 只含简历，不含聊天记录）
             resume_text = self.browser.execute_js('''
-                var box = document.querySelector('.conversation-box');
-                if (!box) return '';
+                var info = document.querySelector('.base-info-content');
+                if (!info) return '';
                 var parts = [];
-                box.querySelectorAll('span, a').forEach(function(el) {
+                var noise = ["在线简历","附件简历","更换职位","沟通职位","期望："];
+                info.querySelectorAll('span, a').forEach(function(el) {
                     var t = el.textContent.trim();
-                    if (t && t.length > 1 && t.length < 100 &&
-                        !t.includes("在线简历") && !t.includes("附件简历") &&
-                        !t.includes("更换职位") && !t.includes("沟通职位")) {
-                        parts.push(t);
+                    if (!t || t.length < 2 || t.length > 100) return;
+                    for (var i = 0; i < noise.length; i++) {
+                        if (t === noise[i]) return;
                     }
+                    parts.push(t);
                 });
                 var seen = {};
-                var unique = parts.filter(function(x) {
+                return parts.filter(function(x) {
                     if (seen[x]) return false;
                     seen[x] = true;
                     return true;
-                });
-                return unique.join(' | ');
+                }).join(' | ');
             ''')
 
             if resume_text:
