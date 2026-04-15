@@ -1,3 +1,7 @@
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent.parent))
+
 """数据分析面板
 
 转化漏斗、回复率、匹配分布、每日趋势等。
