@@ -85,8 +85,8 @@ class Database:
     def update_candidate_resume(self, candidate_id: int, resume_text: str):
         """更新候选人简历内容。"""
         self.conn.execute(
-            "UPDATE candidates SET resume_text = ?, updated_at = ? WHERE id = ?",
-            (resume_text, datetime.now().isoformat(), candidate_id),
+            "UPDATE candidates SET resume_text = ? WHERE id = ?",
+            (resume_text, candidate_id),
         )
         self.conn.commit()
 
