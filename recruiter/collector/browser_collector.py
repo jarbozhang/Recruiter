@@ -445,6 +445,76 @@ class BossWebCollector:
                 source="outbound",
             )
 
+    # ------ 完整简历提取（iframe） ------
+
+    def _extract_full_resume(self) -> str:
+        """点击在线简历按钮，从 iframe 中提取完整简历。
+
+        需要 Playwright driver（支持 frame_locator / page.frames）。
+        """
+        if not hasattr(self.browser, '_ensure_connected'):
+            return ""
+
+        try:
+            page = self.browser._ensure_connected()
+
+            # 点击在线简历按钮
+            btn = page.locator('.resume-btn-online').first
+            if not btn.is_visible(timeout=2000):
+                return ""
+            btn.click()
+            human_delay("click")
+            time.sleep(3)
+
+            # 获取 iframe src
+            iframe_src = page.evaluate('''
+                var iframe = document.querySelector("iframe[src*='c-resume']");
+                return iframe ? iframe.src : '';
+            ''')
+            if not iframe_src:
+                logger.debug("未找到简历 iframe")
+                self._close_resume_dialog(page)
+                return ""
+
+            # 在新标签页打开简历 URL（避免 iframe cross-origin 限制）
+            resume_page = page.context.new_page()
+            try:
+                resume_page.goto(iframe_src, wait_until="networkidle", timeout=15000)
+                time.sleep(3)
+
+                text = resume_page.evaluate("document.body.innerText")
+                if text:
+                    # 清理多余空白
+                    lines = [l.strip() for l in text.split("\n") if l.strip()]
+                    result = "\n".join(lines)
+                    logger.info("完整简历提取成功 (%d chars)", len(result))
+                    return result
+            except Exception as e:
+                logger.warning("完整简历提取失败: %s", e)
+            finally:
+                resume_page.close()
+                self._close_resume_dialog(page)
+
+        except Exception as e:
+            logger.debug("_extract_full_resume 异常: %s", e)
+
+        return ""
+
+    def _close_resume_dialog(self, page):
+        """关闭简历弹窗。"""
+        try:
+            close_btn = page.locator('.boss-dialog .close, .boss-popup__close, .dialog-close')
+            if close_btn.first.is_visible(timeout=1000):
+                close_btn.first.click()
+                time.sleep(0.5)
+        except Exception:
+            # 按 ESC 关闭
+            try:
+                page.keyboard.press("Escape")
+                time.sleep(0.5)
+            except Exception:
+                pass
+
     # ------ 简历详情采集 ------
 
     def collect_resumes(self, limit: int = 50) -> dict:
@@ -505,6 +575,11 @@ class BossWebCollector:
                     return true;
                 }).join(' | ');
             ''')
+
+            # 尝试打开在线简历获取完整内容
+            full_resume = self._extract_full_resume()
+            if full_resume:
+                resume_text = full_resume
 
             if resume_text:
                 self.db.update_candidate_resume(c["id"], resume_text)
