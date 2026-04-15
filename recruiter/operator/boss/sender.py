@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from recruiter import config
 from recruiter.browser.base import BrowserDriver
+from recruiter.browser.human_delay import human_delay, human_typing_delay
 from recruiter.db.models import Database
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,11 @@ class CircuitBreaker:
         if self.consecutive_failures >= self.threshold:
             self.paused_until = datetime.now() + timedelta(seconds=self.pause_seconds)
             logger.warning("Circuit breaker triggered: paused until %s", self.paused_until)
+            try:
+                from recruiter.logging_config import alert_circuit_breaker_open
+                alert_circuit_breaker_open()
+            except Exception:
+                pass
 
     @property
     def is_open(self) -> bool:
@@ -138,22 +144,24 @@ class BossSender:
             self.browser.navigate("https://www.zhipin.com/web/chat/index")
             if not self.browser.wait_for(".geek-item", timeout=10):
                 raise Exception("Chat list not loaded")
+            human_delay("navigate")
 
             # 点击候选人
             candidate_selector = f".geek-item[data-id*='{candidate['platform_id']}']"
             if not self.browser.click(candidate_selector):
                 raise Exception(f"Candidate {candidate['platform_id']} not found in chat list")
-
-            time.sleep(2)
+            human_delay("click")
 
             # 填入消息
             if not self.browser.wait_for(".boss-chat-editor-input", timeout=10):
                 raise Exception("Chat input not found")
+            human_delay("read")  # 模拟先看一下聊天记录
 
             self.browser.fill(".boss-chat-editor-input", conv["message"])
-            time.sleep(0.5)
+            human_typing_delay(conv["message"])  # 模拟打字时间
 
             # 发送（模拟 Enter）
+            human_delay("send_msg")  # 发送前停顿一下
             self.browser.execute_js('''
                 var el = document.querySelector(".boss-chat-editor-input");
                 if (el) {

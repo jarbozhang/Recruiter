@@ -12,21 +12,12 @@
 """
 
 import argparse
-import logging
 import sys
 
 from recruiter import config
 from recruiter.db.models import Database
+from recruiter.logging_config import setup_logging
 from recruiter.pipeline import RecruiterPipeline
-
-
-def setup_logging(verbose: bool = False):
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
 
 def cmd_collect(args):
@@ -66,6 +57,12 @@ def cmd_replies(args):
     pipeline = RecruiterPipeline()
     stats = pipeline.check_replies()
     print(f"回复检测: 检查 {stats['checked']} 条, 发现回复 {stats['replied']} 条")
+
+
+def cmd_follow_up(args):
+    pipeline = RecruiterPipeline()
+    stats = pipeline.follow_up(auto_send=args.auto_send)
+    print(f"跟进处理: {stats['processed']} 条, 生成 {stats['generated']} 条, 自动发送 {stats['auto_sent']} 条")
 
 
 def cmd_scheduler(args):
@@ -155,6 +152,11 @@ def main():
     # replies
     p_replies = sub.add_parser("replies", help="检测候选人回复")
     p_replies.set_defaults(func=cmd_replies)
+
+    # follow-up
+    p_follow = sub.add_parser("follow-up", help="自动跟进回复")
+    p_follow.add_argument("--auto-send", action="store_true", help="自动发送跟进消息")
+    p_follow.set_defaults(func=cmd_follow_up)
 
     # scheduler
     p_sched = sub.add_parser("scheduler", help="定时调度")

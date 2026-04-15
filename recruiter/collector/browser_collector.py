@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 
 from recruiter.browser.base import BrowserDriver
+from recruiter.browser.human_delay import human_delay
 from recruiter.db.models import Database
 
 logger = logging.getLogger(__name__)
@@ -376,6 +377,11 @@ class BossWebCollector:
             return vision_candidates
 
         logger.error("三层采集策略全部失败")
+        try:
+            from recruiter.logging_config import alert_all_layers_failed
+            alert_all_layers_failed()
+        except Exception:
+            pass
         return []
 
     def _collect_via_dom(self, job_url: str) -> list[CandidateInfo]:
@@ -412,9 +418,7 @@ class BossWebCollector:
                 break
 
             self.browser.click(SELECTORS["next_page"])
-            wait_sec = random.uniform(PAGE_TURN_WAIT_MIN, PAGE_TURN_WAIT_MAX)
-            logger.info("翻页等待 %.1fs...", wait_sec)
-            time.sleep(wait_sec)
+            human_delay("page_turn")
             page_num += 1
 
         self._save_candidates(all_candidates)
@@ -469,7 +473,7 @@ class BossWebCollector:
                 failed += 1
                 continue
 
-            time.sleep(2)
+            human_delay("click")
 
             # 提取简历摘要（右侧面板的候选人信息）
             resume_text = self.browser.execute_js('''
@@ -491,8 +495,7 @@ class BossWebCollector:
             else:
                 failed += 1
 
-            # 随机等待
-            time.sleep(random.uniform(1, 3))
+            human_delay("batch_item")
 
         stats = {"total": len(no_resume), "collected": collected, "failed": failed}
         logger.info("简历采集完成: %d/%d 成功", collected, len(no_resume))

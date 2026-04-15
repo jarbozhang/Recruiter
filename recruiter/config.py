@@ -51,3 +51,6 @@ MESSAGE_MAX_LENGTH = 300
 
 # 发送超时（秒）
 SEND_TIMEOUT = int(os.getenv("SEND_TIMEOUT", "60"))
+
+# 告警 Webhook（钉钉/飞书/企业微信）
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "")

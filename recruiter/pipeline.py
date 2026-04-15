@@ -14,6 +14,7 @@ from recruiter.collector.browser_collector import BossWebCollector
 from recruiter.db.models import Database
 from recruiter.engine.matcher import ResumeMatcher
 from recruiter.engine.messenger import MessageGenerator
+from recruiter.engine.follow_up import FollowUpGenerator
 from recruiter.operator.boss.reply_monitor import ReplyMonitor
 from recruiter.operator.boss.sender import BossSender
 
@@ -160,6 +161,17 @@ class RecruiterPipeline:
         stats = monitor.check_replies()
         logger.info("回复检测: 检查 %d 条, 发现回复 %d 条",
                      stats["checked"], stats["replied"])
+        return stats
+
+    # === 阶段 6：自动跟进回复 ===
+
+    def follow_up(self, auto_send: bool = False) -> dict:
+        """为已回复的对话生成跟进消息。"""
+        logger.info("=== 阶段 6：自动跟进回复 ===")
+        generator = FollowUpGenerator(self.db)
+        stats = generator.process_replies(self.driver, auto_send=auto_send)
+        logger.info("跟进处理: %d 条, 生成 %d 条, 自动发送 %d 条",
+                     stats["processed"], stats["generated"], stats["auto_sent"])
         return stats
 
     # === 全流程 ===

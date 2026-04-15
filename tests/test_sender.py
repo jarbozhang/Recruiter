@@ -6,7 +6,7 @@
 import os
 import tempfile
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -33,6 +33,13 @@ def mock_browser():
     browser.click.return_value = True
     browser.fill.return_value = True
     return browser
+
+
+@pytest.fixture(autouse=True)
+def no_delay():
+    with patch("recruiter.operator.boss.sender.human_delay"), \
+         patch("recruiter.operator.boss.sender.human_typing_delay"):
+        yield
 
 
 @pytest.fixture

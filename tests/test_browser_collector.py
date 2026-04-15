@@ -6,7 +6,7 @@
 import json
 import os
 import tempfile
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -35,6 +35,12 @@ def mock_browser():
     browser = MagicMock(spec=BrowserDriver)
     browser.wait_for.return_value = True
     return browser
+
+
+@pytest.fixture(autouse=True)
+def no_delay():
+    with patch("recruiter.collector.browser_collector.human_delay"):
+        yield
 
 
 @pytest.fixture
