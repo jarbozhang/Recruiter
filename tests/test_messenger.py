@@ -20,18 +20,20 @@ def db():
 
 @pytest.fixture
 def generator(db):
-    with patch("recruiter.engine.messenger.anthropic") as mock_anthropic:
-        gen = MessageGenerator(db)
-        gen.client = MagicMock()
-        yield gen
+    gen = MessageGenerator(db)
+    gen.client = MagicMock()
+    gen._backend = "openai"
+    yield gen
 
 
 def _mock_response(text: str):
-    """构造 Anthropic API 的模拟响应。"""
-    content_block = MagicMock()
-    content_block.text = text
+    """构造 OpenAI 兼容格式的模拟响应。"""
+    message = MagicMock()
+    message.content = text
+    choice = MagicMock()
+    choice.message = message
     resp = MagicMock()
-    resp.content = [content_block]
+    resp.choices = [choice]
     return resp
 
 
@@ -41,7 +43,7 @@ class TestHappyPath:
         cid = db.upsert_candidate("boss", "u_001", "张三", "Java 5年经验，精通Spring Boot", "inbound")
 
         msg_text = "看到您在Java和Spring Boot方面有丰富的经验，我们这边有一个高级开发岗位，技术栈高度吻合。团队正在做微服务架构升级，很需要您这样的实战型工程师，有兴趣聊聊吗？"
-        generator.client.messages.create.return_value = _mock_response(msg_text)
+        generator.client.chat.completions.create.return_value = _mock_response(msg_text)
 
         result = generator.generate_for_candidate(job_id, cid, "技术栈匹配度高")
         assert result["status"] == "pending"
@@ -58,7 +60,7 @@ class TestHappyPath:
         job_id = db.create_job("Python开发", "Python 后端开发")
         cid = db.upsert_candidate("boss", "u_002", "李四", "Python 3年", "inbound")
 
-        generator.client.messages.create.return_value = _mock_response("您好，看到您的Python经验很丰富" + "x" * 100)
+        generator.client.chat.completions.create.return_value = _mock_response("您好，看到您的Python经验很丰富" + "x" * 100)
 
         result = generator.generate_for_candidate(job_id, cid)
         convs = db.list_conversations(status="pending")
@@ -72,7 +74,7 @@ class TestEdgeCases:
         job_id = db.create_job("前端开发", "React开发")
         cid = db.upsert_candidate("boss", "u_003", "王五", "", "inbound")
 
-        generator.client.messages.create.return_value = _mock_response(
+        generator.client.chat.completions.create.return_value = _mock_response(
             "注意到您在前端方面有相关背景，我们有一个React开发的机会，感兴趣的话可以聊聊。" + "补充" * 20
         )
 
@@ -86,7 +88,7 @@ class TestEdgeCases:
         cid = db.upsert_candidate("boss", "u_004", "赵六", "简历", "inbound")
 
         long_text = "你好" * 200  # 400 字
-        generator.client.messages.create.return_value = _mock_response(long_text)
+        generator.client.chat.completions.create.return_value = _mock_response(long_text)
 
         result = generator.generate_for_candidate(job_id, cid)
         assert len(result["message"]) == 300
@@ -112,7 +114,7 @@ class TestErrorPaths:
         job_id = db.create_job("Java高级开发", "JD")
         cid = db.upsert_candidate("boss", "u_006", "钱七", "简历", "inbound")
 
-        generator.client.messages.create.side_effect = Exception("API timeout")
+        generator.client.chat.completions.create.side_effect = Exception("API timeout")
 
         result = generator.generate_for_candidate(job_id, cid)
         assert result["status"] == "pending"
@@ -131,7 +133,7 @@ class TestBatch:
         cid2 = db.upsert_candidate("boss", "u_011", "B", "Java 5年", "inbound")
         cid3 = db.upsert_candidate("boss", "u_012", "C", "Go 2年", "inbound")
 
-        generator.client.messages.create.return_value = _mock_response(
+        generator.client.chat.completions.create.return_value = _mock_response(
             "看到您的技术背景和我们的岗位非常匹配，特别是在相关技术栈方面有丰富的实战经验，方便的话可以聊聊这个机会。" + "补充" * 5
         )
 
@@ -153,7 +155,7 @@ class TestBatch:
         cid2 = db.upsert_candidate("boss", "u_021", "Y", "Go 5年", "inbound")
 
         normal_resp = _mock_response("看到您的Go开发经验丰富" + "x" * 80)
-        generator.client.messages.create.side_effect = [
+        generator.client.chat.completions.create.side_effect = [
             normal_resp,
             Exception("rate limited"),
         ]

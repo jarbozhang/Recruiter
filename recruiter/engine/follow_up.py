@@ -8,8 +8,6 @@ import json
 import logging
 import time
 
-import anthropic
-
 from recruiter import config
 from recruiter.browser.base import BrowserDriver
 from recruiter.browser.human_delay import human_delay
@@ -45,7 +43,18 @@ class FollowUpGenerator:
 
     def __init__(self, db: Database):
         self.db = db
-        self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
+        chat_base = getattr(config, "LLM_CHAT_BASE_URL", "")
+        if "anthropic" in chat_base:
+            import anthropic
+            self._backend = "anthropic"
+            self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
+        else:
+            from openai import OpenAI
+            self._backend = "openai"
+            self.client = OpenAI(
+                api_key=config.LLM_CHAT_API_KEY,
+                base_url=chat_base or None,
+            )
         self.model = config.LLM_CHAT_MODEL
 
     def generate_follow_up(self, conv_id: int, candidate_reply: str) -> dict:
@@ -77,12 +86,20 @@ class FollowUpGenerator:
         )
 
         try:
-            resp = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            message = resp.content[0].text.strip()
+            if self._backend == "anthropic":
+                resp = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                message = resp.content[0].text.strip()
+            else:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                message = resp.choices[0].message.content.strip()
             if len(message) > config.MESSAGE_MAX_LENGTH:
                 message = message[:config.MESSAGE_MAX_LENGTH]
         except Exception as e:

@@ -15,6 +15,7 @@ from recruiter.db.models import Database
 from recruiter.engine.matcher import ResumeMatcher
 from recruiter.engine.messenger import MessageGenerator
 from recruiter.engine.follow_up import FollowUpGenerator
+from recruiter.operator.boss.greeter import BossGreeter
 from recruiter.operator.boss.reply_monitor import ReplyMonitor
 from recruiter.operator.boss.sender import BossSender
 
@@ -58,6 +59,17 @@ class RecruiterPipeline:
 
         stats = {"total": len(candidates), "new": new_count}
         logger.info("采集完成: 获取 %d 人, 新增 %d 人", stats["total"], stats["new"])
+        return stats
+
+    # === 阶段 0：主动招呼推荐牛人 ===
+
+    def greet(self, limit: int = 10) -> dict:
+        """从推荐牛人页面主动发起招呼。"""
+        logger.info("=== 阶段 0：主动招呼推荐牛人 ===")
+        greeter = BossGreeter(self.driver, self.db)
+        stats = greeter.greet_recommended(limit=limit)
+        logger.info("主动招呼: 招呼 %d, 跳过 %d, 失败 %d",
+                     stats["greeted"], stats["skipped"], stats["failed"])
         return stats
 
     # === 阶段 1.5：简历详情采集 ===

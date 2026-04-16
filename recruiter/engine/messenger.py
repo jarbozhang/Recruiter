@@ -1,7 +1,5 @@
 import logging
 
-import anthropic
-
 from recruiter import config
 from recruiter.db.models import Database
 
@@ -34,7 +32,19 @@ FALLBACK_TEMPLATE = "您好，我们目前有一个{job_title}的机会，看到
 class MessageGenerator:
     def __init__(self, db: Database):
         self.db = db
-        self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
+        # 支持 OpenAI 兼容格式（GLM/Qwen）和 Anthropic 格式
+        chat_base = getattr(config, "LLM_CHAT_BASE_URL", "")
+        if "anthropic" in chat_base:
+            import anthropic
+            self._backend = "anthropic"
+            self.client = anthropic.Anthropic(api_key=config.LLM_CHAT_API_KEY)
+        else:
+            from openai import OpenAI
+            self._backend = "openai"
+            self.client = OpenAI(
+                api_key=config.LLM_CHAT_API_KEY,
+                base_url=chat_base or None,
+            )
         self.model = config.LLM_CHAT_MODEL
 
     def _build_prompt(self, jd_summary: str, candidate_summary: str,
@@ -46,12 +56,20 @@ class MessageGenerator:
         )
 
     def _call_llm(self, prompt: str) -> str:
-        resp = self.client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return resp.content[0].text
+        if self._backend == "anthropic":
+            resp = self.client.messages.create(
+                model=self.model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text
+        else:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.choices[0].message.content
 
     def _truncate(self, text: str) -> str:
         """截断到 MESSAGE_MAX_LENGTH 字符。"""

@@ -20,6 +20,12 @@ from recruiter.logging_config import setup_logging
 from recruiter.pipeline import RecruiterPipeline
 
 
+def cmd_greet(args):
+    pipeline = RecruiterPipeline()
+    stats = pipeline.greet(args.limit)
+    print(f"主动招呼: 招呼 {stats['greeted']}, 跳过 {stats['skipped']}, 失败 {stats['failed']}")
+
+
 def cmd_collect(args):
     pipeline = RecruiterPipeline()
     stats = pipeline.collect(args.url)
@@ -122,6 +128,11 @@ def main():
     parser = argparse.ArgumentParser(description="AI Recruiter Agent")
     parser.add_argument("-v", "--verbose", action="store_true", help="详细日志")
     sub = parser.add_subparsers(dest="command", help="子命令")
+
+    # greet
+    p_greet = sub.add_parser("greet", help="主动招呼推荐牛人")
+    p_greet.add_argument("--limit", type=int, default=10, help="最多招呼人数")
+    p_greet.set_defaults(func=cmd_greet)
 
     # collect
     p_collect = sub.add_parser("collect", help="采集候选人")
